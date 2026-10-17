@@ -1,0 +1,34 @@
+# Build and development artifacts
+dist/
+bin/
+obj/
+.vs/
+__pycache__/
+*.pyc
+test-output/
+*.tmp
+*.log
+
+# Private recordings and archives
+*.dat
+*.zip
+*.backup
+*.7z
+*.rar
+
+# Portable app settings, downloaded cache and receipts
+設定.json
+版本資料/
+轉換紀錄/
+
+# Credentials and local configuration
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
