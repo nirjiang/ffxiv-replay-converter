@@ -29,7 +29,8 @@ namespace ReplayConverter
         }
 
         public static string Supported(Profile profile)
-        { return "支援 " + String.Join("、", profile.routes.Select(r => Display(r.gameVersion)).Distinct()) + " → " + Display(profile.targetGameVersion); }
+        { return "內建 " + Display(profile.routes.OrderBy(r => r.version).First().gameVersion) + "～" + Display(profile.routes.OrderBy(r => r.version).Last().gameVersion)
+            + " 對照 → " + Display(profile.targetGameVersion) + " · 較早版為試轉換 · 點此查看範圍"; }
     }
 
     public static class GameClient

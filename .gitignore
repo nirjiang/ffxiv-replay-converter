@@ -11,6 +11,7 @@ test-output/
 
 # Private recordings and archives
 *.dat
+*.dat.old
 *.zip
 *.backup
 *.7z

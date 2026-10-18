@@ -62,7 +62,7 @@ namespace ReplayConverter
             cancel.ThrowIfCancellationRequested();
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             var request = (HttpWebRequest)WebRequest.Create(uri);
-            request.UserAgent = "FF14ReplayConverter/1.3";
+            request.UserAgent = "FF14ReplayConverter/1.4";
             request.Timeout = 15000; request.ReadWriteTimeout = 15000;
             request.AllowAutoRedirect = false;
             try
@@ -234,12 +234,14 @@ namespace ReplayConverter
                 Dictionary<string, int> mapped = route.mapping.Where(p => plan.Mapping.ContainsKey(p.Value.ToString())).ToDictionary(p => p.Key, p => plan.Mapping[p.Value.ToString()]);
                 if (!mapped.ContainsKey(route.initOpcode.ToString())) throw Fail("舊版的場景載入轉換路徑在新版中缺失。");
                 routes.Add(new VersionRoute { build = route.build, version = route.version, gameVersion = route.gameVersion,
+                    evidence = route.evidence, namedChecks = route.namedChecks,
                     initOpcode = route.initOpcode, mapping = mapped,
                     expectedSizes = route.expectedSizes.Where(p => mapped.ContainsKey(p.Key)).ToDictionary(p => p.Key, p => p.Value),
                     steps = route.steps.Concat(plan.Steps).ToArray(), sources = route.sources.Concat(plan.Sources).Distinct().ToArray() });
             }
             var previousSizes = oldTargetSizes.Where(p => plan.Mapping.ContainsKey(p.Key.ToString())).ToDictionary(p => p.Key.ToString(), p => p.Value.ToArray());
             routes.Add(new VersionRoute { build = old.targetBuild, version = old.targetVersion, gameVersion = old.targetGameVersion,
+                evidence = "named", namedChecks = plan.NamedChecks,
                 initOpcode = old.targetInitOpcode, mapping = plan.Mapping, expectedSizes = previousSizes, steps = plan.Steps, sources = plan.Sources });
             updated.routes = routes.ToArray(); updated.namedOpcodes = plan.NamedOpcodes;
             updated.supportedDescription = VersionNames.Supported(updated);

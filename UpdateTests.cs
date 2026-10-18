@@ -22,8 +22,9 @@ namespace ReplayConverter
             baseline.namedOpcodes = current.namedOpcodes.Where(p => inverse.ContainsKey(p.Value)).ToDictionary(p => p.Key, p => inverse[p.Value]);
             baseline.routes = current.routes.Where(r => r.build != last.build).Select(r => new VersionRoute {
                 build = r.build, version = r.version, gameVersion = r.gameVersion, initOpcode = r.initOpcode,
+                evidence = r.evidence, namedChecks = r.namedChecks,
                 mapping = r.mapping.Where(p => inverse.ContainsKey(p.Value)).ToDictionary(p => p.Key, p => inverse[p.Value]),
-                expectedSizes = r.expectedSizes, steps = r.steps.Take(r.steps.Length - 1).ToArray(), sources = r.sources.Take(r.sources.Length - 1).ToArray()
+                expectedSizes = r.expectedSizes, steps = r.steps.Take(r.steps.Length - 1).ToArray(), sources = r.sources.Where(s => !s.EndsWith("/7.57.diff.json")).ToArray()
             }).ToArray();
             Profile.Validate(baseline);
             Updater.Save(baseline, Path.Combine(folder, "基準版本.json"));
@@ -34,7 +35,7 @@ namespace ReplayConverter
             Check(updated.targetBuild == current.targetBuild && updated.targetVersion == current.targetVersion, "Incorrect target identity.");
             foreach (VersionRoute route in current.routes)
             {
-                VersionRoute generated = updated.routes.Single(r => r.build == route.build);
+                VersionRoute generated = updated.routes.Single(r => r.version == route.version);
                 Check(generated.mapping.Count == route.mapping.Count && route.mapping.All(p => generated.mapping[p.Key] == p.Value), "Old routes not retained.");
             }
             passed.Add("直接讀取遊戲主程式，真實連線更新 7.56（修正版）→ 7.57，核對 " + plan.NamedChecks + " 種具名封包，完整保留所有舊版路徑");

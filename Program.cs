@@ -15,8 +15,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("FF14 回顧轉換工具")]
 [assembly: AssemblyProduct("FF14 回顧轉換工具")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 namespace ReplayConverter
 {
@@ -30,6 +30,8 @@ namespace ReplayConverter
         public Dictionary<string, int[]> expectedSizes { get; set; }
         public string[] steps { get; set; }
         public string[] sources { get; set; }
+        public string evidence { get; set; }
+        public int namedChecks { get; set; }
     }
 
     public sealed class Profile
@@ -62,14 +64,18 @@ namespace ReplayConverter
                 || p.gameVersions == null || !p.gameVersions.ContainsKey(p.targetVersion) || p.gameVersions[p.targetVersion] != p.targetGameVersion
                 || !System.Text.RegularExpressions.Regex.IsMatch(p.targetGameVersion ?? "", "^[0-9]+\\.[0-9]+(?:h[0-9]*|a)?$")
                 || p.namedOpcodes == null || p.namedOpcodes.Count < 20 || p.namedOpcodes.Values.Any(v => v < 0 || v > 65535)
-                || p.routes == null || p.routes.Length == 0 || p.routes.Length > 100 || p.routes.Any(r => r == null) || p.routes.Select(r => r.build).Distinct().Count() != p.routes.Length)
+                || p.routes == null || p.routes.Length == 0 || p.routes.Length > 100 || p.routes.Any(r => r == null)
+                || p.routes.Where(r => r.build != 0).Select(r => r.build).Distinct().Count() != p.routes.Count(r => r.build != 0)
+                || p.routes.Select(r => r.version).Distinct().Count() != p.routes.Length)
                 throw new InvalidDataException("版本資料不完整。");
             int namedInit;
             if (!p.namedOpcodes.TryGetValue("InitZone", out namedInit) || namedInit != p.targetInitOpcode) throw new InvalidDataException("場景載入版本資料不一致。");
             foreach (VersionRoute r in p.routes)
             {
                 int init;
-                if (r.build == 0 || r.build == p.targetBuild || r.version == null || !p.gameVersions.ContainsKey(r.version) || p.gameVersions[r.version] != r.gameVersion
+                if (r.build == p.targetBuild || r.version == null || !p.gameVersions.ContainsKey(r.version) || p.gameVersions[r.version] != r.gameVersion
+                    || (r.build == 0 && r.evidence != "named" && r.evidence != "diff")
+                    || r.namedChecks < 0 || (r.evidence == "named" && r.namedChecks < 20)
                     || r.mapping == null || r.mapping.Count < 20 || r.expectedSizes == null
                     || r.steps == null || r.sources == null || r.mapping.Values.Any(v => v < 0 || v > 65535)
                     || r.mapping.Keys.Any(k => { int n; return !Int32.TryParse(k, out n) || n < 0 || n > 65535; })
@@ -87,7 +93,7 @@ namespace ReplayConverter
                 if (File.Exists(CachePath) && new FileInfo(CachePath).Length <= 4 * 1024 * 1024)
                 {
                     Profile cached = Updater.Json().Deserialize<Profile>(File.ReadAllText(CachePath)); Validate(cached);
-                    if (String.CompareOrdinal(cached.targetVersion, embedded.targetVersion) >= 0) return cached;
+                    if (String.CompareOrdinal(cached.targetVersion, embedded.targetVersion) >= 0) return HistoricalRoutes.MergeEmbedded(cached, embedded);
                 }
             }
             catch (InvalidDataException) { } catch (IOException) { } catch (UnauthorizedAccessException) { } catch (ArgumentException) { } catch (InvalidOperationException) { }
@@ -114,6 +120,8 @@ namespace ReplayConverter
         public int OpcodeCount;
         public bool NoRecording;
         public string SourceVersion;
+        public bool FingerprintIdentified;
+        public bool TrialConversion;
     }
 
     public sealed class ConvertResult
@@ -125,6 +133,8 @@ namespace ReplayConverter
         public int Packets { get; set; }
         public string Sha256 { get; set; }
         public string SourceVersion { get; set; }
+        public string Identification { get; set; }
+        public string Validation { get; set; }
     }
 
     public sealed class ImportInput
@@ -163,6 +173,7 @@ namespace ReplayConverter
             uint build = U32(original, 0x10);
             if (U32(original, 0x48) == 0 && U32(original, 0x18) == 0 && U32(original, 0x68) == 0)
                 return new PreparedReplay { Data = original, NoRecording = true };
+            if (build == 0 || build > profile.targetBuild) throw Bad("來源建置無效或比目前目標遊戲更新，無法轉換到較舊版本。");
 
             long chapterSize = U32(original, 0x44);
             long packetBytes = U32(original, 0x48);
@@ -180,15 +191,16 @@ namespace ReplayConverter
             if (U16(original, start + 2) != 136 || U32(original, start + 4) != 0)
                 throw Bad("找不到預期的場景載入資料；此回顧尚無法可靠轉換。");
             bool current = build == profile.targetBuild && firstOpcode == profile.targetInitOpcode;
-            VersionRoute route = profile.routes.FirstOrDefault(r => r.build == build);
+            VersionRoute route = profile.routes.FirstOrDefault(r => r.build != 0 && r.build == build);
             bool repair = false;
             if (build == profile.targetBuild && !current)
             {
                 VersionRoute[] matches = profile.routes.Where(r => r.initOpcode == firstOpcode).ToArray();
-                if (matches.Length == 1) { route = matches[0]; repair = true; }
+                route = HistoricalRoutes.Identify(original, start, matches, cancel);
+                repair = true;
             }
             if (!current && route == null)
-                throw Bad("尚未收錄這個舊版本（建置 " + build + "）。原檔未變更。");
+                route = HistoricalRoutes.Identify(original, start, profile.routes.Where(r => r.build == 0 && r.initOpcode == firstOpcode).ToArray(), cancel);
             if (!current && firstOpcode != route.initOpcode)
                 throw Bad("版本與場景資料不一致，請匯入未修改的舊回顧檔。");
 
@@ -244,6 +256,7 @@ namespace ReplayConverter
                 }
             }
             return new PreparedReplay { Data = data, AlreadyCurrent = current, RepairedHeader = repair,
+                FingerprintIdentified = !current && (repair || route.build == 0), TrialConversion = !current && route.evidence != "recording" && route.evidence != null,
                 PacketCount = packets, OpcodeCount = opcodes.Count, SourceVersion = VersionNames.Display(current ? profile.targetGameVersion : route.gameVersion) };
         }
 
@@ -263,11 +276,11 @@ namespace ReplayConverter
                         for (int index = 0; index < zip.Entries.Count; index++)
                         {
                             ZipArchiveEntry entry = zip.Entries[index];
-                            if (!entry.FullName.EndsWith(".dat", StringComparison.OrdinalIgnoreCase)) continue;
+                            if (!IsReplayFile(entry.FullName)) continue;
                             entries.Add(new ImportInput { Container = path, EntryIndex = index, EntryName = entry.FullName });
                             if (entries.Count > 2048) throw Bad("單個 ZIP 超過 2048 份回顧，請分批匯入。");
                         }
-                        if (entries.Count == 0) throw Bad("ZIP 中沒有 .dat 任務回顧檔。");
+                        if (entries.Count == 0) throw Bad("ZIP 中沒有 .dat 或 .dat.old 任務回顧檔。");
                         inputs.AddRange(entries);
                     }
                 }
@@ -275,6 +288,9 @@ namespace ReplayConverter
             }
             return inputs;
         }
+
+        public static bool IsReplayFile(string path)
+        { return path.EndsWith(".dat", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".dat.old", StringComparison.OrdinalIgnoreCase); }
 
         static byte[] ReadData(Stream stream, long length)
         {
@@ -306,8 +322,8 @@ namespace ReplayConverter
         {
             ValidateGame(versionFile, profile);
             if (input.Error != null) throw Bad(input.Error);
-            if (!String.Equals(Path.GetExtension(input.FileName), ".dat", StringComparison.OrdinalIgnoreCase))
-                throw Bad("請選擇 .dat 回顧或 ZIP 備份檔。");
+            if (!IsReplayFile(input.FileName))
+                throw Bad("請選擇 .dat、.dat.old 回顧或 ZIP 備份檔。");
             byte[] original;
             // Do not read a replay while another process is actively writing it.
             using (var stream = new FileStream(input.Container, FileMode.Open, FileAccess.Read, FileShare.Read))
@@ -328,7 +344,8 @@ namespace ReplayConverter
                 return new ConvertResult { Source = input.SourceLabel, Status = "略過", Detail = "已是目前版本，無須再次轉換。", Packets = prepared.PacketCount, SourceVersion = prepared.SourceVersion };
             cancel.ThrowIfCancellationRequested();
             Directory.CreateDirectory(directory);
-            string stem = Path.GetFileNameWithoutExtension(input.FileName) + "_轉換_" + profile.targetGameVersion;
+            string replayName = input.FileName.EndsWith(".dat.old", StringComparison.OrdinalIgnoreCase) ? input.FileName.Substring(0, input.FileName.Length - 4) : input.FileName;
+            string stem = Path.GetFileNameWithoutExtension(replayName) + "_轉換_" + profile.targetGameVersion;
             string temporary = Path.Combine(directory, ".ff14-convert-" + Guid.NewGuid().ToString("N") + ".tmp");
             string destination = null;
             try
@@ -353,7 +370,9 @@ namespace ReplayConverter
             string hash;
             using (var sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(prepared.Data)).Replace("-", "").ToLowerInvariant();
             return new ConvertResult { Source = input.SourceLabel, Output = destination, Status = "完成", Packets = prepared.PacketCount, SourceVersion = prepared.SourceVersion,
-                Sha256 = hash, Detail = prepared.RepairedHeader ? "已修復僅改版本號的檔案，並完成封包轉換。" : "已產生新版副本，原檔完整保留。" };
+                Identification = prepared.FingerprintIdentified ? "完整封包特徵" : "已知建置編號",
+                Validation = prepared.TrialConversion ? "對照與結構檢查通過；未確認遊戲內播放" : "已有真實回顧回歸檢查",
+                Sha256 = hash, Detail = prepared.TrialConversion ? prepared.SourceVersion + " 試轉換完成；請在遊戲內確認播放。" : (prepared.RepairedHeader ? "已修復僅改版本號的檔案，並完成封包轉換。" : "已產生新版副本，原檔完整保留。") };
         }
     }
 
@@ -383,7 +402,7 @@ namespace ReplayConverter
         public MainForm(Profile p)
         {
             profile = p;
-            Text = "FF14 回顧轉換工具";
+            Text = "FF14 回顧轉換工具 V1.2";
             Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
             ClientSize = new Size(880, 700);
             MinimumSize = new Size(780, 720);
@@ -458,7 +477,7 @@ namespace ReplayConverter
             dropHint = LabelAt("可批次匯入回顧或備份壓縮檔，自動辨識舊版本", 9.5F, muted);
             dropHint.AutoSize = false; dropHint.TextAlign = ContentAlignment.MiddleCenter; dropHint.Dock = DockStyle.Top; dropHint.Height = 28;
             import = MakeButton("匯入並轉換回顧", true); import.Size = new Size(228, 44);
-            import.Click += async delegate { using (var dialog = new OpenFileDialog { Filter = "FF14 回顧與備份|*.dat;*.zip;*.zip.backup|回顧檔 (*.dat)|*.dat|ZIP 備份|*.zip;*.zip.backup", Multiselect = true, Title = "選取舊版本回顧或備份" })
+            import.Click += async delegate { using (var dialog = new OpenFileDialog { Filter = "FF14 回顧與備份|*.dat;*.dat.old;*.zip;*.zip.backup|回顧與舊備份|*.dat;*.dat.old|ZIP 備份|*.zip;*.zip.backup", Multiselect = true, Title = "選取舊版本回顧或備份" })
                 { if (Directory.Exists(outputDirectory)) dialog.InitialDirectory = outputDirectory;
                   if (dialog.ShowDialog(this) == DialogResult.OK) await ConvertFiles(dialog.FileNames); } };
             var buttonRow = new Panel { Dock = DockStyle.Bottom, Height = 62 };
@@ -508,8 +527,10 @@ namespace ReplayConverter
             openOutput.Click += delegate { try { if (!Directory.Exists(outputDirectory)) Directory.CreateDirectory(outputDirectory); Process.Start("explorer.exe", "\"" + outputDirectory + "\""); }
                 catch (Exception ex) { MessageBox.Show(this, ex.Message, "無法開啟資料夾", MessageBoxButtons.OK, MessageBoxIcon.Information); } };
             footer.Controls.Add(summary, 0, 0); footer.Controls.Add(openOutput, 1, 0); layout.Controls.Add(footer, 0, 6);
-            support = LabelAt("轉換可離線 · " + VersionNames.Supported(profile), 8.5F, muted);
+            support = LabelAt(VersionNames.Supported(profile), 8.5F, muted);
             support.AutoSize = false; support.AutoEllipsis = true; hints.SetToolTip(support, VersionNames.Supported(profile));
+            support.Cursor = Cursors.Hand;
+            support.Click += delegate { ShowSupport(); };
             support.Dock = DockStyle.Fill; support.TextAlign = ContentAlignment.MiddleLeft;
             layout.Controls.Add(support, 0, 7);
         }
@@ -528,6 +549,26 @@ namespace ReplayConverter
             if (String.IsNullOrWhiteSpace(outputDirectory))
                 outputDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "My Games", "FINAL FANTASY XIV - A Realm Reborn", "replay", "autorenamed");
             outputPath.Text = outputDirectory;
+        }
+
+        void ShowSupport()
+        {
+            using (var dialog = new Form { Text = "版本對照與驗證範圍", Size = new Size(740, 560), MinimumSize = new Size(600, 400),
+                StartPosition = FormStartPosition.CenterParent, BackColor = background, ForeColor = ForeColor, Font = Font })
+            {
+                var description = LabelAt("目前目標：" + VersionNames.Display(profile.targetGameVersion) + "。試轉換版本尚未確認實際播放。", 10, muted);
+                description.AutoSize = false; description.Dock = DockStyle.Top; description.Height = 52; description.Padding = new Padding(12);
+                var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true,
+                    BackColor = surface, ForeColor = ForeColor, BorderStyle = BorderStyle.None };
+                list.Columns.Add("來源遊戲版本", 170); list.Columns.Add("辨識方式", 145); list.Columns.Add("驗證範圍", 380);
+                foreach (VersionRoute route in profile.routes.OrderBy(r => r.version))
+                {
+                    var item = new ListViewItem(VersionNames.Display(route.gameVersion));
+                    item.SubItems.Add(route.build == 0 ? "完整封包特徵" : "已知建置編號");
+                    item.SubItems.Add(HistoricalRoutes.EvidenceLabel(route)); list.Items.Add(item);
+                }
+                dialog.Controls.Add(list); dialog.Controls.Add(description); dialog.ShowDialog(this);
+            }
         }
 
         void SaveSettings()
@@ -571,7 +612,7 @@ namespace ReplayConverter
                 if (latest.VersionString != local.VersionString || latest.Build != local.Build)
                     throw new InvalidDataException("遊戲在更新資料時又發生變更，請重新檢查。");
                 Updater.Save(updated, Profile.CachePath);
-                profile = updated; support.Text = "轉換可離線 · " + VersionNames.Supported(profile); hints.SetToolTip(support, VersionNames.Supported(profile));
+                profile = updated; support.Text = VersionNames.Supported(profile); hints.SetToolTip(support, VersionNames.Supported(profile));
                 summary.Text = "已更新至遊戲 " + VersionNames.Display(profile.targetGameVersion) + " · 可匯入舊回顧，並實測新版播放。";
             }
             catch (Exception ex)
@@ -750,6 +791,7 @@ namespace ReplayConverter
                     return 0;
                 }
                 if (args.Length == 4 && args[0] == "--self-test") { SelfTests.Run(profile, args[1], args[2], args[3]); return 0; }
+                if (args.Length == 2 && args[0] == "--historical-test") { HistoricalTests.Run(profile, args[1]); return 0; }
                 if (args.Length == 5 && args[0] == "--update-test") { UpdateTests.Run(profile, args[1], args[2], args[3], args[4]); return 0; }
                 if (args.Length == 3 && args[0] == "--audit") return SelfTests.Audit(profile, args[1], args[2]);
                 Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
@@ -808,7 +850,7 @@ namespace ReplayConverter
             }
             catch (Exception ex)
             {
-                if (args.Length > 0 && (args[0] == "--self-test" || args[0] == "--update-test")) File.WriteAllText(Path.Combine(args[args.Length - 1], "測試失敗.txt"), ex.ToString());
+                if (args.Length > 0 && (args[0] == "--self-test" || args[0] == "--update-test" || args[0] == "--historical-test")) File.WriteAllText(Path.Combine(args[args.Length - 1], "測試失敗.txt"), ex.ToString());
                 else MessageBox.Show(ex.Message, "FF14 回顧轉換工具", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }

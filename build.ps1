@@ -9,8 +9,9 @@ $arguments = @('/nologo', '/target:winexe', '/optimize+', '/platform:anycpu', '/
     ('/win32manifest:' + (Join-Path $PSScriptRoot 'app.manifest')),
     ('/win32icon:' + (Join-Path $PSScriptRoot 'app.ico')),
     ('/out:' + (Join-Path $OutputDirectory 'FF14回顧轉換工具.exe')),
-    (Join-Path $PSScriptRoot 'Program.cs'), (Join-Path $PSScriptRoot 'Updater.cs'), (Join-Path $PSScriptRoot 'UpdateTests.cs'), (Join-Path $PSScriptRoot 'GameClient.cs'))
+    (Join-Path $PSScriptRoot 'Program.cs'), (Join-Path $PSScriptRoot 'Updater.cs'), (Join-Path $PSScriptRoot 'UpdateTests.cs'), (Join-Path $PSScriptRoot 'GameClient.cs'),
+    (Join-Path $PSScriptRoot 'HistoricalRoutes.cs'), (Join-Path $PSScriptRoot 'HistoricalTests.cs'))
 & $compiler @arguments
 if ($LASTEXITCODE -ne 0) { throw '編譯失敗。' }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '使用說明.txt'), (Join-Path $PSScriptRoot 'LICENSE-opcodediff.txt'), (Join-Path $PSScriptRoot 'LICENSE-FFXIVOpcodes.txt') -Destination $OutputDirectory -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '使用說明.txt'), (Join-Path $PSScriptRoot '支援版本.txt'), (Join-Path $PSScriptRoot 'LICENSE-opcodediff.txt'), (Join-Path $PSScriptRoot 'LICENSE-FFXIVOpcodes.txt') -Destination $OutputDirectory -Force
 Write-Output (Join-Path $OutputDirectory 'FF14回顧轉換工具.exe')
